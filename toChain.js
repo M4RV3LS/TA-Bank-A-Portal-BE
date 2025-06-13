@@ -80,22 +80,6 @@ async function callAddKycVersionOnContract(
   );
 
   // --- START: Execution Time Logging ---
-  const startTime = Date.now();
-  // --- END: Execution Time Logging ---
-
-  const tx = await kycContract.addKycVersion(
-    clientId,
-    hashKtp,
-    hashKyc,
-    statusOnChain,
-    txOverrides
-  );
-  console.log(
-    `[Bank A - toChain - callAddKycVersion] Tx sent for clientId ${clientId}, hash: ${tx.hash}. Waiting...`
-  );
-  const receipt = await tx.wait();
-
-  // --- START: Execution Time Logging ---
   const endTime = Date.now();
   const executionTime = (endTime - startTime) / 1000; // in seconds
   console.log(
@@ -108,7 +92,7 @@ async function callAddKycVersionOnContract(
     JSON.stringify(receipt, null, 2)
   );
   console.log(
-    `[Bank A - toChain - callAddKycVersion] Tx mined for clientId ${clientId}, receipt status: ${
+    `[Bank A - toChain - callAddKycVersion] Tx mined receipt status: ${
       receipt.status === 1 ? "Success" : "Failed"
     }`
   );
@@ -136,7 +120,7 @@ async function callAddKycVersionOnContract(
       }
     }
   }
-  return { txHash: receipt.hash, version };
+  return { txHash: receipt.hash, version, executionTime }; // Return execution time as well
 }
 
 // ✅ UPDATED: This function now receives the bundle from the CP and saves it locally.
