@@ -29,6 +29,9 @@ const GATEWAY_PORTS = {
   BANK_B: 5100,
 };
 
+const util = require("util");
+const queryAsync = util.promisify(connection.query).bind(connection);
+
 function getGatewayApiBaseUrl(bankId) {
   if (!bankId) return null;
   const port = GATEWAY_PORTS[bankId.toUpperCase()];
@@ -207,6 +210,62 @@ app.post(
     );
   }
 );
+
+// --- ADDED: DB Logger function ---
+async function logTransactionToDb(txData) {
+  const {
+    txHash,
+    requestId,
+    clientId,
+    txType,
+    ethAmountWei, // Note: We'll pass Wei directly here
+    receipt,
+    version, // Will be null for 'pay'
+    issuerAddress,
+  } = txData;
+
+  const sql = `
+    INSERT INTO blockchain_transactions
+      (tx_hash, request_id, client_id, tx_type, eth_amount_wei, onchain_status, 
+       block_number, gas_used, version, issuer_address, db_log_duration_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+  console.log(
+    `[DB Logger] Attempting to log tx ${txHash} for request ${requestId}.`
+  );
+  const dbLogStartTime = Date.now();
+
+  try {
+    const dbLogEndTime = Date.now();
+    const dbLogDurationMs = dbLogEndTime - dbLogStartTime;
+
+    const params = [
+      txHash,
+      requestId,
+      clientId,
+      txType,
+      ethAmountWei, // Already in Wei
+      receipt.status,
+      receipt.blockNumber,
+      receipt.gasUsed.toString(),
+      version,
+      issuerAddress,
+      dbLogDurationMs,
+    ];
+
+    await queryAsync(sql, params);
+
+    console.log(
+      `[DB Logger] Successfully logged tx ${txHash}. DB write took: ${dbLogDurationMs}ms.`
+    );
+  } catch (dbErr) {
+    console.error(
+      `[DB Logger] CRITICAL ERROR: Failed to log successful tx ${txHash} to database. Manual check required.`,
+      dbErr
+    );
+  }
+}
 
 // STREAM KTP IMAGE
 app.get("/kyc-requests/:id/ktp", (req, res) => {
@@ -731,6 +790,19 @@ app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
         `On-chain payment transaction failed. Tx hash: ${tx.hash}. Status: ${receipt.status}`
       );
     }
+
+    // --- ADDED: Log to DB on success ---
+    await logTransactionToDb({
+      txHash: receipt.hash,
+      requestId: id,
+      clientId: clientId,
+      txType: "pay",
+      ethAmountWei: paymentAmountInWei, // Pass the Wei amount directly
+      receipt: receipt,
+      version: null, // No specific version for a 'pay' transaction
+      issuerAddress: signer.address,
+    });
+    // --- END ADDED ---
 
     // 5. Update local database status
     await new Promise((resolve, reject) => {
