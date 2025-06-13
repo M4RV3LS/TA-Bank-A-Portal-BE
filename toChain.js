@@ -1,4 +1,4 @@
-// bank-portal/bank-a/backend/toChain.js
+// path file : bank-portal/bank-a/TA-Bank-A-Portal-BE/toChain.js
 
 require("dotenv").config();
 const { ethers } = require("ethers");
@@ -79,6 +79,10 @@ async function callAddKycVersionOnContract(
     `[Bank A - toChain - callAddKycVersion] For clientId ${clientId}: ETH: ${ethAmountString}, On-chain status: '${statusOnChain}', HashKTP: ${hashKtp}, HashKYC: ${hashKyc}`
   );
 
+  // --- START: Execution Time Logging ---
+  const startTime = Date.now();
+  // --- END: Execution Time Logging ---
+
   const tx = await kycContract.addKycVersion(
     clientId,
     hashKtp,
@@ -90,6 +94,15 @@ async function callAddKycVersionOnContract(
     `[Bank A - toChain - callAddKycVersion] Tx sent for clientId ${clientId}, hash: ${tx.hash}. Waiting...`
   );
   const receipt = await tx.wait();
+
+  // --- START: Execution Time Logging ---
+  const endTime = Date.now();
+  const executionTime = (endTime - startTime) / 1000; // in seconds
+  console.log(
+    `[Bank A - toChain - callAddKycVersion] Tx MINED for clientId ${clientId}. Execution Time: ${executionTime} seconds.`
+  );
+  // --- END: Execution Time Logging ---
+
   console.log(
     "---- FULL TRANSACTION RECEIPT ----\n",
     JSON.stringify(receipt, null, 2)
@@ -305,6 +318,10 @@ async function sendToChain(requestRow) {
       hashKyc,
       status_kyc,
       ethAmountString
+    );
+
+    console.log(
+      `[Bank A - sendToChain] On-chain call for request ${request_id} completed in ${onChainResult.executionTime} seconds.`
     );
 
     // Pass the exact data URIs used for hashing to the sync function
