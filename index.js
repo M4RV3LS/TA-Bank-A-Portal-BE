@@ -48,7 +48,7 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
       cb(new Error("Not allowed by CORS"));
     },
-    methods: ["GET", "POST", "OPTIONS", "DELETE"],
+    methods: ["GET", "POST", "OPTIONS", "DELETE", "PUT"],
     credentials: true,
   })
 );
@@ -94,6 +94,98 @@ try {
   // process.exit(1);
 }
 
+app.post("/pay-test", async (req, res) => {
+  const { amount } = req.body;
+  const bankId = process.env.THIS_BANK_IDENTIFIER;
+  if (!amount || BigInt(amount) <= 0) {
+    return res.status(400).json({ error: "Invalid or missing amount" });
+  }
+  try {
+    const [deposit] = await queryAsync(
+      "SELECT balance FROM bank_deposits_test WHERE bank_id = ?",
+      [bankId]
+    );
+    if (!deposit) {
+      return res
+        .status(404)
+        .json({ error: `Deposit record for ${bankId} not found.` });
+    }
+    const currentBalance = BigInt(deposit.balance);
+    const paymentAmount = BigInt(amount);
+    if (currentBalance < paymentAmount) {
+      return res.status(400).json({ error: "Insufficient balance" });
+    }
+    const newBalance = currentBalance - paymentAmount;
+    await queryAsync(
+      "UPDATE bank_deposits_test SET balance = ? WHERE bank_id = ?",
+      [newBalance.toString(), bankId]
+    );
+
+    console.log(
+      `[PAY-TEST] Bank: ${bankId}, Debited: ${paymentAmount.toString()}, New Balance: ${newBalance.toString()}`
+    );
+    res.json({
+      message: `Payment successful for ${bankId}`,
+      previousBalance: currentBalance.toString(),
+      newBalance: newBalance.toString(),
+    });
+  } catch (error) {
+    console.error("[PAY-TEST] Error:", error);
+    res.status(500).json({ error: "Simulation failed", detail: error.message });
+  }
+});
+
+/**
+ * POST /check-and-verify-test
+ * Endpoint simulasi untuk membandingkan hash data KYC.
+ * Prasyarat: Data untuk profile_id harus sudah ada di tabel 'kyc_data_test'.
+ * Body: { profile_id: string, customer_ktp: dataURI, customer_kyc: dataURI }
+ */
+app.post("/check-and-verify-test", async (req, res) => {
+  const { profile_id, customer_ktp, customer_kyc } = req.body;
+  if (!profile_id || !customer_ktp || !customer_kyc) {
+    return res.status(400).json({ error: "Missing fields for verification" });
+  }
+  try {
+    const [storedData] = await queryAsync(
+      "SELECT customer_ktp, customer_kyc FROM kyc_data_test WHERE profile_id = ?",
+      [profile_id]
+    );
+    if (!storedData) {
+      return res.status(404).json({
+        error: `No test KYC data found for profile_id: ${profile_id}`,
+      });
+    }
+
+    // Hash data yang diterima dari request
+    const localHashKtp = ethers.keccak256(ethers.toUtf8Bytes(customer_ktp));
+    const localHashKyc = ethers.keccak256(ethers.toUtf8Bytes(customer_kyc));
+
+    // Hash data yang tersimpan di DB sebagai "sumber kebenaran"
+    const storedHashKtp = ethers.keccak256(
+      ethers.toUtf8Bytes(storedData.customer_ktp)
+    );
+    const storedHashKyc = ethers.keccak256(
+      ethers.toUtf8Bytes(storedData.customer_kyc)
+    );
+
+    const match =
+      localHashKtp === storedHashKtp && localHashKyc === storedHashKyc;
+
+    console.log(`[VERIFY-TEST] Profile: ${profile_id}, Hash Match: ${match}`);
+    res.json({
+      match,
+      receivedHashes: { ktp: localHashKtp, kyc: localHashKyc },
+      storedHashes: { ktp: storedHashKtp, kyc: storedHashKyc },
+    });
+  } catch (error) {
+    console.error("[VERIFY-TEST] Error:", error);
+    res
+      .status(500)
+      .json({ error: "Verification simulation failed", detail: error.message });
+  }
+});
+
 // --- Routes ---
 
 // GET all KYC requests
@@ -138,9 +230,10 @@ app.post(
       });
     }
 
-    if (!client_id || !customer_name || !customer_email || !customer_phone) {
+    if (!client_id || !customer_name) {
+      // Email and phone are no longer required here
       return res.status(400).json({
-        error: "Missing common required fields (client_id, name, email, phone)",
+        error: "Missing required fields (client_id, name)",
       });
     }
 
@@ -185,8 +278,8 @@ app.post(
       [
         client_id,
         customer_name,
-        customer_email,
-        customer_phone,
+        customer_email || null, // Insert null if not provided
+        customer_phone || null, // Insert null if not provided
         customer_ktp_datauri,
         customer_kyc_datauri,
         profileId,
@@ -227,8 +320,8 @@ async function logTransactionToDb(txData) {
   const sql = `
     INSERT INTO blockchain_transactions
       (tx_hash, request_id, client_id, tx_type, eth_amount_wei, onchain_status, 
-       block_number, gas_used, version, issuer_address, db_log_duration_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       block_number, gas_used, version, issuer_address)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   console.log(
@@ -237,9 +330,6 @@ async function logTransactionToDb(txData) {
   const dbLogStartTime = Date.now();
 
   try {
-    const dbLogEndTime = Date.now();
-    const dbLogDurationMs = dbLogEndTime - dbLogStartTime;
-
     const params = [
       txHash,
       requestId,
@@ -251,10 +341,12 @@ async function logTransactionToDb(txData) {
       receipt.gasUsed.toString(),
       version,
       issuerAddress,
-      dbLogDurationMs,
+      ,
     ];
 
     await queryAsync(sql, params);
+    const dbLogEndTime = Date.now();
+    const dbLogDurationMs = dbLogEndTime - dbLogStartTime;
 
     console.log(
       `[DB Logger] Successfully logged tx ${txHash}. DB write took: ${dbLogDurationMs}ms.`
@@ -482,61 +574,52 @@ app.get("/dukcapil-status/:requestId", async (req, res) => {
 // Send to Chain
 app.post("/kyc-requests/:id/send-to-chain", async (req, res) => {
   const { id } = req.params;
-  console.log(`[send-to-chain] Called for request_id=${id}`);
-  connection.query(
-    `SELECT request_id, client_id, customer_ktp, customer_kyc, status_kyc, status_request
-     FROM user_kyc_request WHERE request_id = ?`,
-    [id],
-    async (err, rows) => {
-      if (err) {
-        console.error("[send-to-chain] DB error loading request:", err);
-        return res.status(500).json({ error: err.message });
-      }
-      if (!rows.length) {
-        console.warn(`[send-to-chain] No such request ${id}`);
-        return res.status(404).json({ error: "Not found" });
-      }
-      const r = rows[0];
-      if (r.status_kyc === "success") {
-        console.log(
-          `[send-to-chain] Request ${id} already on-chain, skipping.`
-        );
-        return res.json({
-          message: "Already on chain",
-          txHash: null,
-          status: "success",
-        });
-      }
-      const requestRow = {
-        request_id: r.request_id,
-        client_id: r.client_id,
-        customer_ktp: r.customer_ktp,
-        customer_kyc: r.customer_kyc,
-        status_kyc: r.status_kyc,
-        status_request: r.status_request,
-      };
-      try {
-        const result = await sendToChain(requestRow); // from ./toChain.js
-        if (result.success) {
-          return res.json({
-            message: "Added to chain",
-            txHash: result.txHash,
-            version: result.version ?? null,
-            status: "success",
-          });
-        } else {
-          return res
-            .status(500)
-            .json({ message: "Chain call failed", error: result.error });
-        }
-      } catch (e) {
-        console.error("[send-to-chain] Error:", e);
-        return res
-          .status(500)
-          .json({ error: "Blockchain write failed", detail: e.message });
-      }
+  try {
+    const [requestRow] = await queryAsync(
+      "SELECT * FROM user_kyc_request WHERE request_id = ?",
+      [id]
+    );
+    if (!requestRow) return res.status(404).json({ error: "Not found" });
+    if (requestRow.status_kyc === "success")
+      return res.json({ message: "Already on chain" });
+
+    const result = await sendToChain(requestRow);
+    if (!result.success) throw new Error(result.error);
+
+    await logTransactionToDb({
+      ...result,
+      requestId: id,
+      clientId: requestRow.client_id,
+      txType: requestRow.status_request,
+      issuerAddress: signer.address,
+    });
+
+    // ✅ ADDED: Populate kyc_data_test table after successful on-chain submission
+    if (requestRow.profile_id) {
+      const upsertSql =
+        "INSERT INTO kyc_data_test (profile_id, customer_ktp, customer_kyc) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE customer_ktp=VALUES(customer_ktp), customer_kyc=VALUES(customer_kyc)";
+      await queryAsync(upsertSql, [
+        requestRow.profile_id,
+        requestRow.customer_ktp,
+        requestRow.customer_kyc,
+      ]);
+      console.log(
+        `[TEST-DATA-SETUP] Populated/updated kyc_data_test for profile_id ${requestRow.profile_id}`
+      );
     }
-  );
+
+    res.json({
+      message: "Added to chain",
+      txHash: result.txHash,
+      version: result.version ?? null,
+      status: "success",
+    });
+  } catch (e) {
+    console.error("[send-to-chain] Error:", e);
+    res
+      .status(500)
+      .json({ error: "Blockchain write failed", detail: e.message });
+  }
 });
 
 // Pay endpoint
@@ -980,6 +1063,9 @@ app.post(
   "/kyc-requests/:id/fetch-and-verify-reuse",
   express.json(),
   async (req, res) => {
+    // --- PERFORMANCE MEASUREMENT START ---
+    const startTime = performance.now();
+    let durationMs = -1; // Default value
     const { id: requestId } = req.params;
     const thisBankSignerAddress = await signer.getAddress(); // BANK A's address
     const thisBankIdentifier = process.env.THIS_BANK_IDENTIFIER;
@@ -1249,6 +1335,13 @@ app.post(
         );
       }
 
+      durationMs = performance.now() - startTime;
+      console.log(
+        `[PERF] /fetch-and-verify-reuse for request ${requestId} took ${durationMs.toFixed(
+          2
+        )} ms. Match: ${match}`
+      );
+
       await new Promise((ok, nok) =>
         connection.query(
           `UPDATE user_kyc_request SET status_kyc = ? WHERE request_id = ?`,
@@ -1277,11 +1370,57 @@ app.post(
         `[FETCH-REUSE DEBUG] Outer error for request ${requestId}:`,
         error
       );
+      durationMs = performance.now() - startTime;
+      console.error(
+        `[PERF-ERROR] /fetch-and-verify-reuse for request ${requestId} failed after ${durationMs.toFixed(
+          2
+        )} ms. Error: ${error.message}`
+      );
       res.status(500).json({
         error: "Server error during KYC reuse fetch/verify.",
         detail: error.message,
       });
     }
+  }
+);
+
+app.put(
+  "/clients/:clientId/contact-sharing",
+  express.json(),
+  async (req, res) => {
+    const { clientId } = req.params;
+    const { field, value } = req.body; // field: 'customer_email' or 'customer_phone', value: string or null
+
+    if (!["customer_email", "customer_phone"].includes(field)) {
+      return res.status(400).json({ error: "Invalid field specified." });
+    }
+
+    if (value && typeof value !== "string") {
+      return res
+        .status(400)
+        .json({ error: "Invalid value provided for update." });
+    }
+
+    // This SQL query now uses `WHERE client_id = ?` to update ALL records for the user.
+    const sql = `UPDATE user_kyc_request SET ${field} = ? WHERE client_id = ?`;
+
+    connection.query(sql, [value, clientId], (err, result) => {
+      if (err) {
+        console.error(
+          `[CONTACT-SHARING] MySQL UPDATE error for client ${clientId}:`,
+          err
+        );
+        return res
+          .status(500)
+          .json({ error: "Database update failed", detail: err.message });
+      }
+      console.log(
+        `[CONTACT-SHARING] Updated '${field}' for client_id ${clientId}. Affected rows: ${result.affectedRows}`
+      );
+      res.json({
+        message: `Sharing preference for '${field}' was updated for all of the client's records.`,
+      });
+    });
   }
 );
 
