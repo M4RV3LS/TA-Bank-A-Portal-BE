@@ -1,0 +1,15 @@
+config:
+  target: "http://localhost:5000" # Bank B's server
+  phases:
+    - duration: 60
+      arrivalRate: 2 # Payments might be slightly faster than creating KYC records
+  payload:
+    path: "./pay-ids.csv"
+    fields:
+      - "requestId"
+
+scenarios:
+  - name: "Pay for KYC Reuse"
+    flow:
+      - post:
+          url: "/kyc-requests/{{ requestId }}/pay"

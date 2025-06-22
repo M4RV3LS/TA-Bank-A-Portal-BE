@@ -32,6 +32,8 @@ const GATEWAY_PORTS = {
 const util = require("util");
 const queryAsync = util.promisify(connection.query).bind(connection);
 
+// --- ♠️ ADJUSTED: Promisify connection.query for async/await usage in new endpoints ♠️ ---
+
 function getGatewayApiBaseUrl(bankId) {
   if (!bankId) return null;
   const port = GATEWAY_PORTS[bankId.toUpperCase()];
@@ -57,9 +59,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // --- Ethereum Setup (for BANK A) ---
-// Ensure .env variables are loaded for BANK A (PRIVATE_KEY, RPC_URL, KYC_REGISTRY_ADDRESS)
-require("dotenv").config(); // Ensure .env is loaded
-
+require("dotenv").config();
 let provider;
 let signer;
 let contractWithSigner;
@@ -75,7 +75,7 @@ try {
     );
   }
   provider = new JsonRpcProvider(process.env.RPC_URL);
-  signer = new Wallet(process.env.PRIVATE_KEY, provider); // BANK A's signer
+  signer = new Wallet(process.env.PRIVATE_KEY, provider);
   const artifact = require(__dirname + "/abi/KycRegistryV3.json");
   contractWithSigner = new Contract(
     process.env.KYC_REGISTRY_ADDRESS,
@@ -90,87 +90,115 @@ try {
     "FATAL: Ethereum setup failed for BANK A backend:",
     ethSetupError
   );
-  // Decide if the app should exit or continue with limited functionality
-  // process.exit(1);
 }
 
+// =================================================================
+// --- ♠️ NEW: START OF TEST AND SIMULATION ENDPOINTS BLOCK ♠️ ---
+// =================================================================
+
+/**
+ * [TEST] Endpoint to simulate a payment by debiting a test deposit account.
+ * This mimics the "pay" flow by updating a balance in the `bank_deposits_test` table.
+ * Body: { amount: string } // Amount in Wei
+ */
 app.post("/pay-test", async (req, res) => {
+  // --- ♠️ ADDED: Start timer ♠️ ---
+  const startTime = performance.now();
+
   const { amount } = req.body;
   const bankId = process.env.THIS_BANK_IDENTIFIER;
+
   if (!amount || BigInt(amount) <= 0) {
     return res.status(400).json({ error: "Invalid or missing amount" });
   }
+
   try {
     const [deposit] = await queryAsync(
       "SELECT balance FROM bank_deposits_test WHERE bank_id = ?",
       [bankId]
     );
+
     if (!deposit) {
       return res
         .status(404)
         .json({ error: `Deposit record for ${bankId} not found.` });
     }
+
     const currentBalance = BigInt(deposit.balance);
     const paymentAmount = BigInt(amount);
+
     if (currentBalance < paymentAmount) {
       return res.status(400).json({ error: "Insufficient balance" });
     }
+
     const newBalance = currentBalance - paymentAmount;
     await queryAsync(
       "UPDATE bank_deposits_test SET balance = ? WHERE bank_id = ?",
       [newBalance.toString(), bankId]
     );
 
+    // --- ♠️ ADDED: Calculate and log duration on success ♠️ ---
+    const durationInMs = performance.now() - startTime;
     console.log(
-      `[PAY-TEST] Bank: ${bankId}, Debited: ${paymentAmount.toString()}, New Balance: ${newBalance.toString()}`
+      `[PERF] /pay-test successful. Duration: ${durationInMs.toFixed(2)} ms`
     );
+
     res.json({
       message: `Payment successful for ${bankId}`,
       previousBalance: currentBalance.toString(),
       newBalance: newBalance.toString(),
     });
   } catch (error) {
+    // --- ♠️ ADDED: Calculate and log duration on error ♠️ ---
+    const durationInMs = performance.now() - startTime;
+    console.error(
+      `[PERF] /pay-test failed. Duration: ${durationInMs.toFixed(2)} ms`
+    );
+
     console.error("[PAY-TEST] Error:", error);
     res.status(500).json({ error: "Simulation failed", detail: error.message });
   }
 });
 
-/**
- * POST /check-and-verify-test
- * Endpoint simulasi untuk membandingkan hash data KYC.
- * Prasyarat: Data untuk profile_id harus sudah ada di tabel 'kyc_data_test'.
- * Body: { profile_id: string, customer_ktp: dataURI, customer_kyc: dataURI }
- */
 app.post("/check-and-verify-test", async (req, res) => {
+  // --- ♠️ ADDED: Start timer ♠️ ---
+  const startTime = performance.now();
+
   const { profile_id, customer_ktp, customer_kyc } = req.body;
   if (!profile_id || !customer_ktp || !customer_kyc) {
     return res.status(400).json({ error: "Missing fields for verification" });
   }
+
   try {
     const [storedData] = await queryAsync(
       "SELECT customer_ktp, customer_kyc FROM kyc_data_test WHERE profile_id = ?",
       [profile_id]
     );
+
     if (!storedData) {
       return res.status(404).json({
         error: `No test KYC data found for profile_id: ${profile_id}`,
       });
     }
 
-    // Hash data yang diterima dari request
     const localHashKtp = ethers.keccak256(ethers.toUtf8Bytes(customer_ktp));
     const localHashKyc = ethers.keccak256(ethers.toUtf8Bytes(customer_kyc));
-
-    // Hash data yang tersimpan di DB sebagai "sumber kebenaran"
     const storedHashKtp = ethers.keccak256(
       ethers.toUtf8Bytes(storedData.customer_ktp)
     );
     const storedHashKyc = ethers.keccak256(
       ethers.toUtf8Bytes(storedData.customer_kyc)
     );
-
     const match =
       localHashKtp === storedHashKtp && localHashKyc === storedHashKyc;
+
+    // --- ♠️ ADDED: Calculate and log duration on success ♠️ ---
+    const durationInMs = performance.now() - startTime;
+    console.log(
+      `[PERF] /check-and-verify-test successful. Match: ${match}. Duration: ${durationInMs.toFixed(
+        2
+      )} ms`
+    );
 
     console.log(`[VERIFY-TEST] Profile: ${profile_id}, Hash Match: ${match}`);
     res.json({
@@ -179,6 +207,14 @@ app.post("/check-and-verify-test", async (req, res) => {
       storedHashes: { ktp: storedHashKtp, kyc: storedHashKyc },
     });
   } catch (error) {
+    // --- ♠️ ADDED: Calculate and log duration on error ♠️ ---
+    const durationInMs = performance.now() - startTime;
+    console.error(
+      `[PERF] /check-and-verify-test failed. Duration: ${durationInMs.toFixed(
+        2
+      )} ms`
+    );
+
     console.error("[VERIFY-TEST] Error:", error);
     res
       .status(500)
@@ -186,10 +222,14 @@ app.post("/check-and-verify-test", async (req, res) => {
   }
 });
 
+// =================================================================
+// --- ♠️ NEW: END OF TEST AND SIMULATION ENDPOINTS BLOCK ♠️ ---
+// =================================================================
+
 // --- Routes ---
 
-// GET all KYC requests
-app.get("/kyc-requests", (req, res) => {
+// --- ♠️ ADJUSTED: GET all KYC requests (to use async/await for consistency) ♠️ ---
+app.get("/kyc-requests", async (req, res) => {
   const { client_id } = req.query;
   let sql = `SELECT * FROM user_kyc_request`;
   const params = [];
@@ -198,16 +238,17 @@ app.get("/kyc-requests", (req, res) => {
     params.push(client_id);
   }
   sql += ` ORDER BY created_at DESC`;
-  connection.query(sql, params, (err, rows) => {
-    if (err) {
-      console.error("[GET /kyc-requests] MySQL GET error:", err);
-      return res.status(500).json({ error: "Failed to fetch requests" });
-    }
+
+  try {
+    const rows = await queryAsync(sql, params);
     res.json(rows);
-  });
+  } catch (err) {
+    console.error("[GET /kyc-requests] MySQL GET error:", err);
+    return res.status(500).json({ error: "Failed to fetch requests" });
+  }
 });
 
-// POST a new KYC request
+// --- ♠️ ADJUSTED: POST a new KYC request (to use async/await for consistency) ♠️ ---
 app.post(
   "/kyc-requests",
   upload.fields([
@@ -215,6 +256,7 @@ app.post(
     { name: "kyc", maxCount: 1 },
   ]),
   async (req, res) => {
+    // ... (logic is the same, just wrapped in async/await try/catch)
     let {
       client_id,
       customer_name,
@@ -231,7 +273,6 @@ app.post(
     }
 
     if (!client_id || !customer_name) {
-      // Email and phone are no longer required here
       return res.status(400).json({
         error: "Missing required fields (client_id, name)",
       });
@@ -266,41 +307,38 @@ app.post(
     }
 
     const sql = `
-    INSERT INTO user_kyc_request
-      (client_id, customer_name, customer_email, customer_phone,
-       customer_ktp, customer_kyc, profile_id,
-       status_kyc, status_request, home_bank_code)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?)
-  `;
+      INSERT INTO user_kyc_request
+        (client_id, customer_name, customer_email, customer_phone,
+         customer_ktp, customer_kyc, profile_id,
+         status_kyc, status_request, home_bank_code)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?)
+    `;
+    const params = [
+      client_id,
+      customer_name,
+      customer_email || null,
+      customer_phone || null,
+      customer_ktp_datauri,
+      customer_kyc_datauri,
+      profileId,
+      status_request,
+      home_bank_code,
+    ];
 
-    connection.query(
-      sql,
-      [
-        client_id,
-        customer_name,
-        customer_email || null, // Insert null if not provided
-        customer_phone || null, // Insert null if not provided
-        customer_ktp_datauri,
-        customer_kyc_datauri,
-        profileId,
+    try {
+      const result = await queryAsync(sql, params);
+      res.status(201).json({
+        request_id: result.insertId,
+        status_kyc: "submitted",
         status_request,
-        home_bank_code,
-      ],
-      (err, result) => {
-        if (err) {
-          console.error("[POST /kyc-requests] MySQL INSERT error:", err);
-          return res
-            .status(500)
-            .json({ error: "Could not save request", detail: err.message });
-        }
-        res.status(201).json({
-          request_id: result.insertId,
-          status_kyc: "submitted",
-          status_request,
-          profile_id: profileId,
-        });
-      }
-    );
+        profile_id: profileId,
+      });
+    } catch (err) {
+      console.error("[POST /kyc-requests] MySQL INSERT error:", err);
+      return res
+        .status(500)
+        .json({ error: "Could not save request", detail: err.message });
+    }
   }
 );
 
@@ -571,7 +609,6 @@ app.get("/dukcapil-status/:requestId", async (req, res) => {
   }
 });
 
-// Send to Chain
 app.post("/kyc-requests/:id/send-to-chain", async (req, res) => {
   const { id } = req.params;
   try {
@@ -583,18 +620,12 @@ app.post("/kyc-requests/:id/send-to-chain", async (req, res) => {
     if (requestRow.status_kyc === "success")
       return res.json({ message: "Already on chain" });
 
+    // The sendToChain function now handles its own DB logging
     const result = await sendToChain(requestRow);
     if (!result.success) throw new Error(result.error);
 
-    await logTransactionToDb({
-      ...result,
-      requestId: id,
-      clientId: requestRow.client_id,
-      txType: requestRow.status_request,
-      issuerAddress: signer.address,
-    });
-
-    // ✅ ADDED: Populate kyc_data_test table after successful on-chain submission
+    // --- ♠️ ADJUSTED: This block populates the test DB for the verification simulation ♠️ ---
+    // It seeds the `kyc_data_test` table, enabling the `/check-and-verify-test` endpoint.
     if (requestRow.profile_id) {
       const upsertSql =
         "INSERT INTO kyc_data_test (profile_id, customer_ktp, customer_kyc) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE customer_ktp=VALUES(customer_ktp), customer_kyc=VALUES(customer_kyc)";
@@ -607,6 +638,7 @@ app.post("/kyc-requests/:id/send-to-chain", async (req, res) => {
         `[TEST-DATA-SETUP] Populated/updated kyc_data_test for profile_id ${requestRow.profile_id}`
       );
     }
+    // --- ♠️ END ADJUSTMENT ♠️ ---
 
     res.json({
       message: "Added to chain",
@@ -874,6 +906,30 @@ app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
       );
     }
 
+    // --- ♠️ CORRECTED: Added a defensive check before calculating gas fee ♠️ ---
+    if (receipt && receipt.gasUsed && receipt.effectiveGasPrice) {
+      const gasUsed = receipt.gasUsed;
+      const effectiveGasPrice = receipt.effectiveGasPrice;
+
+      // This calculation is now safe
+      const totalFeeWei = gasUsed * effectiveGasPrice;
+
+      console.log(`[GAS] Tx: ${receipt.hash}`);
+      console.log(`      ├─ Gas Used:            ${gasUsed.toString()}`);
+      console.log(
+        `      ├─ Effective Gas Price: ${ethers.formatUnits(
+          effectiveGasPrice,
+          "gwei"
+        )} Gwei`
+      );
+      console.log(
+        `      └─ Total Fee:           ${ethers.formatEther(totalFeeWei)} ETH`
+      );
+    } else {
+      console.warn("[GAS] Could not calculate gas fee from receipt.");
+    }
+    // --- ♠️ END CORRECTED BLOCK ♠️ ---
+
     // --- ADDED: Log to DB on success ---
     await logTransactionToDb({
       txHash: receipt.hash,
@@ -925,6 +981,41 @@ app.post("/kyc-requests/:id/pay", express.json(), async (req, res) => {
     console.log(
       `[PAY on ${bankIdentifier}] Payment process completed successfully for request ${id}.`
     );
+
+    // --- ♠️ ADDED: Internal HTTP call to /pay-test endpoint ♠️ ---
+    try {
+      const testPayUrl = `http://localhost:${PORT}/pay-test`;
+      console.log(
+        `[PAY-TEST-CHAIN] Triggering internal POST to ${testPayUrl} with amount ${paymentAmountInWei}`
+      );
+
+      const testResponse = await fetch(testPayUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: paymentAmountInWei }),
+      });
+
+      if (!testResponse.ok) {
+        // Log the error but don't throw, to avoid failing the main request
+        const errorBody = await testResponse.text();
+        console.error(
+          `[PAY-TEST-CHAIN] Internal call to /pay-test failed with status ${testResponse.status}: ${errorBody}`
+        );
+      } else {
+        const successBody = await testResponse.json();
+        console.log(
+          "[PAY-TEST-CHAIN] Internal call to /pay-test successful:",
+          successBody.message
+        );
+      }
+    } catch (internalError) {
+      console.error(
+        "[PAY-TEST-CHAIN] Error during internal fetch to /pay-test:",
+        internalError.message
+      );
+    }
+    // --- ♠️ END ADDED BLOCK ♠️ ---
+
     return res.json({
       message: "Payment successful and status updated.",
       txHash: tx.hash,
@@ -1342,6 +1433,26 @@ app.post(
         )} ms. Match: ${match}`
       );
 
+      // --- ♠️ ADDED: Seed this bank's test DB before running the simulation ♠️ ---
+      try {
+        console.log(
+          `[VERIFY-TEST-CHAIN] Seeding local kyc_data_test for profile_id: ${localGeneratedProfileId}`
+        );
+        const upsertSql =
+          "INSERT INTO kyc_data_test (profile_id, customer_ktp, customer_kyc) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE customer_ktp=VALUES(customer_ktp), customer_kyc=VALUES(customer_kyc)";
+        await queryAsync(upsertSql, [
+          localGeneratedProfileId,
+          decryptedKtpDataUri,
+          decryptedKycDataUri,
+        ]);
+      } catch (dbError) {
+        console.error(
+          "[VERIFY-TEST-CHAIN] Failed to seed local test database. The simulation will likely fail.",
+          dbError
+        );
+      }
+      // --- ♠️ END ADDED BLOCK ♠️ ---
+
       await new Promise((ok, nok) =>
         connection.query(
           `UPDATE user_kyc_request SET status_kyc = ? WHERE request_id = ?`,
@@ -1352,6 +1463,45 @@ app.post(
       console.log(
         `[FETCH-REUSE DEBUG] 9.1. Final status for request ${requestId} set to ${finalStatusKyc}.`
       );
+
+      // --- ♠️ ADDED: Internal HTTP call to /check-and-verify-test endpoint ♠️ ---
+      if (match) {
+        // Only run the simulation if the main verification was a success
+        try {
+          const testVerifyUrl = `http://localhost:${PORT}/check-and-verify-test`;
+          console.log(
+            `[VERIFY-TEST-CHAIN] Triggering internal POST to ${testVerifyUrl}`
+          );
+
+          const testResponse = await fetch(testVerifyUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              profile_id: localGeneratedProfileId,
+              customer_ktp: decryptedKtpDataUri,
+              customer_kyc: decryptedKycDataUri,
+            }),
+          });
+
+          if (!testResponse.ok) {
+            const errorBody = await testResponse.text();
+            console.error(
+              `[VERIFY-TEST-CHAIN] Internal call to /check-and-verify-test failed with status ${testResponse.status}: ${errorBody}`
+            );
+          } else {
+            const successBody = await testResponse.json();
+            console.log(
+              `[VERIFY-TEST-CHAIN] Internal call to /check-and-verify-test successful. Match result: ${successBody.match}`
+            );
+          }
+        } catch (internalError) {
+          console.error(
+            "[VERIFY-TEST-CHAIN] Error during internal fetch to /check-and-verify-test:",
+            internalError.message
+          );
+        }
+      }
+      // --- ♠️ END ADDED BLOCK ♠️ ---
 
       res.json({
         match,

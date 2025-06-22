@@ -166,6 +166,30 @@ async function callAddKycVersionOnContract(
     `[Bank A - toChain - callAddKycVersion] Tx MINED for clientId ${clientId}. Execution Time: ${executionTime} seconds.`
   );
 
+  // --- ♠️ CORRECTED: Added a defensive check before calculating gas fee ♠️ ---
+  if (receipt && receipt.gasUsed && receipt.effectiveGasPrice) {
+    const gasUsed = receipt.gasUsed;
+    const effectiveGasPrice = receipt.effectiveGasPrice;
+
+    // This calculation is now safe because we've confirmed the values exist.
+    const totalFeeWei = gasUsed * effectiveGasPrice;
+
+    console.log(`[GAS] Tx: ${receipt.hash}`);
+    console.log(`      ├─ Gas Used:            ${gasUsed.toString()}`);
+    console.log(
+      `      ├─ Effective Gas Price: ${ethers.formatUnits(
+        effectiveGasPrice,
+        "gwei"
+      )} Gwei`
+    );
+    console.log(
+      `      └─ Total Fee:           ${ethers.formatEther(totalFeeWei)} ETH`
+    );
+  } else {
+    console.warn("[GAS] Could not calculate gas fee from receipt.");
+  }
+  // --- ♠️ END CORRECTED BLOCK ♠️ ---
+
   console.log(
     `[Bank A - toChain - callAddKycVersion] Tx mined receipt status: ${
       receipt.status === 1 ? "Success" : "Failed"

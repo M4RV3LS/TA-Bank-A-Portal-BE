@@ -1,0 +1,15 @@
+config:
+  target: "http://localhost:5000" # Bank B's server
+  phases:
+    - duration: 60
+      arrivalRate: 5 # This flow involves no on-chain writes, so it should be faster
+  payload:
+    path: "./check-reuse-ids.csv"
+    fields:
+      - "requestId"
+
+scenarios:
+  - name: "Check and Reuse KYC Data"
+    flow:
+      - post:
+          url: "/kyc-requests/{{ requestId }}/fetch-and-verify-reuse"

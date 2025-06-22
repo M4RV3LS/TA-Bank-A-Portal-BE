@@ -1,0 +1,17 @@
+# file path : bank-portal/bank-a/TA-Bank-A-Portal-BE/scripts/loadtest-send-to-chain.yml
+config:
+  target: "http://localhost:4000" # Bank A's server
+  phases:
+    # On-chain transactions are slow. Start with a very low rate.
+    - duration: 120
+      arrivalRate: 1 # Start 1 new virtual user per second
+  payload:
+    path: "./send-to-chain-ids.csv"
+    fields:
+      - "requestId"
+
+scenarios:
+  - name: "Send KYC to Blockchain"
+    flow:
+      - post:
+          url: "/kyc-requests/{{ requestId }}/send-to-chain"
